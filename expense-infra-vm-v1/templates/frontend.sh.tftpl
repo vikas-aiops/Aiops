@@ -1,0 +1,251 @@
+#!/bin/bash
+# expense-frontend (RHEL 9): React build served by nginx, /api proxied to the backend.
+# Rendered by Terraform templatefile(); safe to re-run.
+# Reaches the backend by name (${backend_host}), never by IP.
+
+mkdir -p /var/log/expense
+exec > >(tee -a /var/log/expense/setup.log) 2>&1
+
+VALIDATE() {
+  if [ "$1" -ne 0 ]; then
+    echo "$(date '+%F %T') $2 ... FAILURE"
+    exit 1
+  else
+    echo "$(date '+%F %T') $2 ... SUCCESS"
+  fi
+}
+
+# Installs only the packages that are not already present (never upgrades).
+INSTALL_MISSING() {
+  local missing=""
+  for p in "$@"; do rpm -q "$p" > /dev/null 2>&1 || missing="$missing $p"; done
+  if [ -z "$missing" ]; then
+    echo "$(date '+%F %T') packages $* already installed ... SUCCESS"
+    return 0
+  fi
+  dnf install -y --setopt=install_weak_deps=False $missing
+  VALIDATE $? "install$missing"
+}
+
+echo "===== expense-frontend setup started $(date) ====="
+
+HOSTNAME_NEW="${hostname}"
+NODE_MAJOR="${node_version}"
+REPO_URL="${repo_url}"
+REPO_REF="${repo_ref}"
+APP_DIR="/opt/expense/frontend"
+WEB_ROOT="/usr/share/nginx/html"
+
+# ---- hostname (kept across reboots) -------------------------------------------
+hostnamectl set-hostname "$HOSTNAME_NEW"
+VALIDATE $? "set hostname $HOSTNAME_NEW"
+grep -q " $HOSTNAME_NEW\$" /etc/hosts || echo "127.0.1.1 $HOSTNAME_NEW" >> /etc/hosts
+VALIDATE $? "add hostname to /etc/hosts"
+echo "preserve_hostname: true" > /etc/cloud/cloud.cfg.d/99-expense-hostname.cfg
+VALIDATE $? "tell cloud-init to keep the hostname"
+
+# ---- 2 GB swap (the React build needs it on t3.micro) ---------------------------
+if ! swapon --show | grep -q /swapfile; then
+  [ -f /swapfile ] || dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
+  chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+  VALIDATE $? "create 2 GB swap"
+  grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap defaults 0 0' >> /etc/fstab
+else
+  echo "swap already on, skipping"
+fi
+
+# ---- packages: nginx, git, Node.js (build only) -----------------------------------
+# Install only what this VM needs: no system update or upgrade (too slow for a
+# lab that is rebuilt daily), and nothing already on the AMI is touched (nginx
+# and git ship with it; `dnf install nginx git` would upgrade them).
+INSTALL_MISSING nginx git
+
+# Node.js comes from the NodeSource repo ONLY (every other repo disabled), so
+# dnf never downloads the large RHEL repo metadata. The repo file is the same
+# one NodeSource's setup script writes, minus its extra N|Solid repo.
+if node --version 2>/dev/null | grep -q "^v$NODE_MAJOR\."; then
+  echo "Node.js $(node --version) already installed, skipping"
+else
+  ARCH="$(uname -m)"
+  cat > /etc/yum.repos.d/nodesource-nodejs.repo <<EOF
+[nodesource-nodejs]
+name=Node.js Packages for $ARCH - $NODE_MAJOR
+baseurl=https://rpm.nodesource.com/pub_$NODE_MAJOR.x/nodistro/nodejs/$ARCH
+priority=9
+enabled=1
+gpgcheck=1
+gpgkey=https://rpm.nodesource.com/gpgkey/ns-operations-public.key
+module_hotfixes=1
+EOF
+  VALIDATE $? "add NodeSource repository for Node.js $NODE_MAJOR"
+  dnf install -y --setopt=install_weak_deps=False --disablerepo='*' --enablerepo=nodesource-nodejs nodejs
+  VALIDATE $? "install Node.js $NODE_MAJOR"
+fi
+node --version | grep -q "^v$NODE_MAJOR\."
+VALIDATE $? "Node.js major version is $NODE_MAJOR"
+echo "node $(node --version), npm $(npm --version)"
+
+# ---- build ---------------------------------------------------------------------------
+mkdir -p /opt/expense
+if [ -d "$APP_DIR/.git" ]; then
+  echo "$APP_DIR exists, fetching $REPO_REF"
+  git -C "$APP_DIR" fetch --depth 1 origin "$REPO_REF" && git -C "$APP_DIR" checkout --force FETCH_HEAD
+  VALIDATE $? "update frontend repo to $REPO_REF"
+else
+  git clone --depth 1 --branch "$REPO_REF" "$REPO_URL" "$APP_DIR"
+  VALIDATE $? "clone $REPO_URL at $REPO_REF"
+fi
+
+cd "$APP_DIR" && npm ci --no-audit --no-fund
+VALIDATE $? "npm ci"
+npm run build
+VALIDATE $? "npm run build"
+
+mkdir -p "$WEB_ROOT"
+rm -rf "$WEB_ROOT"/*
+cp -r "$APP_DIR/dist/." "$WEB_ROOT/"
+VALIDATE $? "copy dist/ to $WEB_ROOT"
+
+# ---- SELinux and firewalld (RHEL) ---------------------------------------------------
+if command -v selinuxenabled > /dev/null && selinuxenabled; then
+  # Let nginx open outbound connections (proxy to the backend).
+  setsebool -P httpd_can_network_connect 1
+  VALIDATE $? "SELinux: allow nginx to proxy (httpd_can_network_connect)"
+  restorecon -R "$WEB_ROOT"
+  VALIDATE $? "SELinux: label $WEB_ROOT"
+else
+  echo "SELinux disabled, skipping"
+fi
+if systemctl is-active --quiet firewalld; then
+  firewall-cmd --permanent --add-service=http && firewall-cmd --reload
+  VALIDATE $? "open 80 in firewalld"
+fi
+
+# ---- nginx -----------------------------------------------------------------------------
+# Main config = RHEL's default minus its built-in server block, so our site is
+# the only server on port 80. Default access/error log format is kept.
+cat > /etc/nginx/nginx.conf <<'NGINX'
+user nginx;
+worker_processes auto;
+error_log /var/log/nginx/error.log notice;
+pid /run/nginx.pid;
+
+include /usr/share/nginx/modules/*.conf;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                      '$status $body_bytes_sent "$http_referer" '
+                      '"$http_user_agent" "$http_x_forwarded_for"';
+
+    access_log  /var/log/nginx/access.log  main;
+
+    sendfile            on;
+    tcp_nopush          on;
+    keepalive_timeout   65;
+    types_hash_max_size 4096;
+
+    include             /etc/nginx/mime.types;
+    default_type        application/octet-stream;
+
+    include /etc/nginx/conf.d/*.conf;
+}
+NGINX
+VALIDATE $? "write /etc/nginx/nginx.conf"
+
+# The backend is reached by NAME. nginx resolves a hostname in a static
+# proxy_pass only once, at startup, so a replaced backend VM (new IP) would be
+# unreachable until nginx restarts. Using the VPC resolver plus a variable in
+# proxy_pass makes nginx re-resolve backend.<domain> (cached 10 s here, plus
+# the record's 60 s TTL).
+cat > /etc/nginx/conf.d/expense.conf <<'NGINX'
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Amazon-provided DNS (VPC resolver)
+    resolver 169.254.169.253 valid=10s ipv6=off;
+    resolver_timeout 5s;
+
+    # ALB health check: nginx only, independent of the backend.
+    location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    # API: proxied unchanged (the backend serves its routes under /api).
+    # ^~ : regex locations below never take over an /api/ path.
+    location ^~ /api/ {
+        set $backend_upstream "http://${backend_host}:${backend_port}";
+        proxy_pass $backend_upstream;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+
+        proxy_connect_timeout 5s;
+        proxy_read_timeout    60s;
+
+        # Backend unreachable / too slow: keep the real status (502 / 504) but
+        # answer in the API's JSON error shape instead of nginx's HTML page.
+        error_page 502 @api_502;
+        error_page 504 @api_504;
+    }
+
+    location @api_502 {
+        default_type application/json;
+        return 502 '{"error":{"code":"backend_unavailable","message":"The server is not responding. Try again in a moment."}}\n';
+    }
+    location @api_504 {
+        default_type application/json;
+        return 504 '{"error":{"code":"backend_timeout","message":"The server took too long to respond. Try again in a moment."}}\n';
+    }
+
+    # Built assets (hashed file names): a missing file is a real 404, never
+    # the app shell with a 200.
+    location ^~ /assets/ {
+        try_files $uri =404;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # The app shell. Never cached, so a new build is picked up immediately.
+    location = /index.html {
+        add_header Cache-Control "no-cache";
+    }
+
+    # Anything else that looks like a file (favicon.ico, robots.txt, *.png):
+    # serve it or 404.
+    location ~ \.[A-Za-z0-9]+$ {
+        try_files $uri =404;
+    }
+
+    # Page routes (/, /dashboard, /expenses, ...): the single-page app.
+    location / {
+        try_files $uri /index.html;
+    }
+}
+NGINX
+VALIDATE $? "write /etc/nginx/conf.d/expense.conf"
+
+nginx -t
+VALIDATE $? "nginx -t"
+systemctl enable nginx
+VALIDATE $? "enable nginx"
+systemctl restart nginx
+VALIDATE $? "start nginx"
+
+# ---- check -------------------------------------------------------------------------------
+curl -f http://127.0.0.1/healthz
+VALIDATE $? "GET /healthz"
+
+echo "===== EXPENSE SETUP COMPLETE $(date) ====="
