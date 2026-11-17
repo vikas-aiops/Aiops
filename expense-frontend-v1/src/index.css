@@ -1,0 +1,213 @@
+@import 'tailwindcss';
+
+/*
+ * Design tokens: "Ledger, not spreadsheet".
+ * Tailwind's default palette, radii and type scale are cleared first so no
+ * default slate grey, default radius or default text size can leak into the UI.
+ */
+@theme {
+  /* ---- colour ------------------------------------------------------------ */
+  --color-*: initial;
+  --color-white: #ffffff;
+
+  --color-ink: #10182b; /* app background */
+  --color-ink-raised: #161f38; /* sidebar, top bar, modals, slide-over */
+  --color-ink-hover: #1d2846; /* hover on raised ink */
+  --color-ink-line: #25304f; /* dividers and borders on dark */
+  --color-ink-muted: #8891a8; /* secondary text on dark */
+
+  --color-paper: #f7f5ef; /* primary cards, tables */
+  --color-paper-dim: #e9e5d8; /* secondary surfaces, zebra, dividers on paper */
+  --color-paper-line: #ddd8c8; /* borders on paper */
+  --color-paper-muted: #6b6355; /* secondary text on paper */
+
+  --color-ledger-green: #1f9d6b; /* under budget, success, positive */
+  --color-ledger-green-deep: #157551; /* green text on paper (AA) */
+  --color-stamp-amber: #e8873a; /* primary actions, stamp, focus, highlights */
+  --color-stamp-amber-hover: #f09852;
+  --color-stamp-amber-deep: #a35716; /* amber text on paper (AA) */
+  --color-alert-coral: #e15251; /* errors, over budget, destructive */
+  --color-alert-coral-deep: #b23736; /* coral text on paper (AA) */
+
+  /* ---- type -------------------------------------------------------------- */
+  --font-*: initial;
+  --font-display: 'Space Grotesk Variable', 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, monospace;
+
+  /* Type scale (rem): 0.75 / 0.875 / 1 / 1.25 / 1.5 / 2 / 3 */
+  --text-*: initial;
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1rem;
+  --text-sm: 0.875rem;
+  --text-sm--line-height: 1.25rem;
+  --text-base: 1rem;
+  --text-base--line-height: 1.5rem;
+  --text-lg: 1.25rem;
+  --text-lg--line-height: 1.75rem;
+  --text-xl: 1.5rem;
+  --text-xl--line-height: 2rem;
+  --text-2xl: 2rem;
+  --text-2xl--line-height: 2.5rem;
+  --text-3xl: 3rem;
+  --text-3xl--line-height: 1.1;
+
+  /* ---- shape: radius by hierarchy ----------------------------------------- */
+  --radius-*: initial;
+  --radius-card: 12px; /* cards, slide-over edge, dialogs */
+  --radius-control: 8px; /* inputs, buttons */
+  --radius-tick: 4px; /* checkboxes, tiny marks */
+  --radius-pill: 9999px; /* chips, badges, progress bars */
+
+  /* ---- depth: paper resting on ink --------------------------------------- */
+  --shadow-*: initial;
+  --shadow-paper: 0 1px 0 rgb(255 255 255 / 0.6) inset, 0 2px 4px rgb(4 8 20 / 0.25), 0 12px 32px -8px rgb(4 8 20 / 0.55);
+  --shadow-float: 0 18px 48px -12px rgb(4 8 20 / 0.75), 0 4px 12px rgb(4 8 20 / 0.35);
+  --shadow-press: 0 1px 2px rgb(4 8 20 / 0.35);
+
+  /* ---- layout: desktop shell from 769px; at 768px and below, mobile ------ */
+  --breakpoint-desk: 769px;
+
+  /* ---- motion ------------------------------------------------------------ */
+  --animate-stamp-row: stamp-row 1600ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  --animate-stamp-mark: stamp-mark 1600ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  --animate-highlight: highlight 1400ms ease-out both;
+
+  @keyframes stamp-row {
+    0% {
+      transform: scale(0.97);
+      background-color: rgb(232 135 58 / 0.28);
+    }
+    25% {
+      transform: scale(1);
+    }
+    100% {
+      transform: scale(1);
+      background-color: transparent;
+    }
+  }
+  @keyframes stamp-mark {
+    0% {
+      opacity: 0;
+      transform: translateY(-50%) scale(1.9) rotate(-18deg);
+    }
+    25% {
+      opacity: 1;
+      transform: translateY(-50%) scale(1) rotate(-9deg);
+    }
+    70% {
+      opacity: 0.9;
+      transform: translateY(-50%) scale(1) rotate(-9deg);
+    }
+    100% {
+      opacity: 0;
+      transform: translateY(-50%) scale(1) rotate(-9deg);
+    }
+  }
+  @keyframes highlight {
+    0% {
+      background-color: rgb(232 135 58 / 0.3);
+    }
+    100% {
+      background-color: transparent;
+    }
+  }
+}
+
+/* Response-to-action motion only: overlays, slide-over, dialogs. */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes sheet-in {
+  from {
+    transform: translateX(100%);
+  }
+}
+@keyframes sheet-out {
+  to {
+    transform: translateX(100%);
+  }
+}
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    @apply bg-ink text-paper font-sans text-base antialiased;
+    font-feature-settings: 'cv11', 'ss01';
+  }
+  /* One focus treatment everywhere: the amber ring. */
+  :focus {
+    outline: none;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-stamp-amber);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: rgb(232 135 58 / 0.35);
+  }
+  input[type='date']::-webkit-calendar-picker-indicator {
+    opacity: 0.6;
+    cursor: pointer;
+  }
+  input[type='number']::-webkit-inner-spin-button,
+  input[type='number']::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type='number'] {
+    -moz-appearance: textfield;
+  }
+}
+
+@layer utilities {
+  /* Money, dates and table figures: monospace with tabular numerals so
+     amounts line up in columns like a real ledger. */
+  .figures {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum', 'zero' 0;
+    letter-spacing: -0.01em;
+  }
+  .paper-card {
+    @apply bg-paper text-ink rounded-card shadow-paper;
+  }
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-ink-line) transparent;
+  }
+}
+
+/* Respect reduced motion: the stamp becomes a short highlight fade, which
+   still signals "this row is new". Everything else stops moving. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    transition-duration: 1ms !important;
+  }
+  .stamp-row {
+    animation: var(--animate-highlight) !important;
+    animation-duration: 1400ms !important;
+  }
+  .stamp-mark {
+    display: none !important;
+  }
+}
