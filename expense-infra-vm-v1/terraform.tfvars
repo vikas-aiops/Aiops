@@ -5,7 +5,7 @@
 #   frontend.<domain>, backend.<domain>,
 #   mysql.<domain>                           -> private IPs (VM-to-VM traffic)
 # Change this if the course domain is a different zone.
-domain_name = "daws90s.shop"
+domain_name = "109v.store"
 
 # Your public IP, /32. Re-check if your IP changes:
 #   curl -s https://checkip.amazonaws.com
